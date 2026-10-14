@@ -5,34 +5,45 @@ const WebSocket = require("ws");
 const app = express();
 const server = http.createServer(app);
 
-app.get("/", (req, res) => {
-  res.json({
-    status: "ok",
-    message: "Microphone API is running",
-    websocket: "/audio"
+const wss = new WebSocket.Server({ noServer: true });
+const receivers = new Set();
+
+app.get("/", (_, res) => {
+  res.json({ status: "Audio relay online" });
+});
+
+server.on("upgrade", (req, socket, head) => {
+  const path = new URL(req.url, "http://localhost").pathname;
+
+  if (path !== "/sender" && path !== "/receiver") {
+    socket.destroy();
+    return;
+  }
+
+  wss.handleUpgrade(req, socket, head, ws => {
+    ws.role = path;
+    wss.emit("connection", ws);
   });
 });
 
-const wss = new WebSocket.Server({
-  server,
-  path: "/audio"
-});
+wss.on("connection", ws => {
+  if (ws.role === "/receiver") {
+    receivers.add(ws);
+    ws.on("close", () => receivers.delete(ws));
+    return;
+  }
 
-wss.on("connection", (socket) => {
-  socket.send(JSON.stringify({
-    type: "connected",
-    message: "WebSocket connected"
-  }));
+  ws.on("message", (audio, isBinary) => {
+    if (!isBinary) return;
 
-  socket.on("message", (data, isBinary) => {
-    console.log(
-      isBinary ? `Received ${data.length} audio bytes` : data.toString()
-    );
+    for (const receiver of receivers) {
+      if (receiver.readyState === WebSocket.OPEN) {
+        receiver.send(audio, { binary: true });
+      }
+    }
   });
 });
 
-const PORT = process.env.PORT || 3000;
-
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server listening on port ${PORT}`);
+server.listen(process.env.PORT || 10000, "0.0.0.0", () => {
+  console.log("Audio relay running");
 });
